@@ -1,0 +1,16 @@
+numpy
+scipy
+pandas
+matplotlib
+seaborn
+scikit-learn
+networkx
+tqdm
+requests
+torch
+transformers
+accelerate
+vllm
+hdbscan
+umap-learn
+gensim

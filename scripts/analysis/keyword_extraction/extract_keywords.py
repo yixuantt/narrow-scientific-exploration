@@ -9,9 +9,10 @@ across two stages:
                        passing CoT leak / empty filters, matching analyze_runs_rq1.py).
 
 Each document is sent to the LLM together with the current vocabulary snapshot.
-The LLM must separate (1) the research problem the contribution targets from
-(2) the concrete techniques it uses; reuse vocabulary only for ideas that are
-part of the contribution, not background mentions; add new phrases sparingly.
+The LLM separates (1) Problem components, i.e. what the contribution is about,
+from (2) Approach components, i.e. how the contribution addresses the problem.
+The output fields remain ``task_keywords`` and ``method_keywords`` for backward
+compatibility.
 We use the offline vLLM backend (``run_inference_vllm.LLMGenerator``) so that
 we can drive one GPU-resident engine in-process and batch across the whole
 dataset.
@@ -258,6 +259,17 @@ _BANNED_PHRASES_EXACT: set = {
     "approach",
     "framework",
     "method",
+    "methods",
+    "analysis",
+    "study",
+    "effect",
+    "effects",
+    "impact",
+    "impacts",
+    "application",
+    "applications",
+    "system",
+    "systems",
     "algorithm",
     "learning",
     "training",
@@ -384,61 +396,115 @@ class Vocabulary:
 # --------------------------------------------------------------------------- #
 
 SYSTEM_PROMPT = (
-    "You are a careful ML research assistant that extracts two kinds of concepts "
-    "from a paper/idea abstract:\n"
-    "  * task_keywords — the research problem this contribution targets.\n"
-    "  * method_keywords — concrete techniques the contribution uses or introduces.\n\n"
-    "Reuse matching lines from the vocabularies when they name the same "
-    "contribution-level idea; keep phrases short and stable for corpus comparison. "
-    "Do not narrate the paper or copy motivational wording.\n\n"
+    "You are a careful science assistant that extracts two facets from a paper "
+    "or generated research idea. The output field names are kept as "
+    "task_keywords and method_keywords for compatibility, but use these "
+    "definitions:\n"
+    "  * task_keywords are Problem components. A Problem component names what "
+    "the contribution is about: the object of study, target system, population, "
+    "phenomenon, relationship, outcome, property, or problem that the work tries "
+    "to explain, predict, improve, or create.\n"
+    "  * method_keywords are Approach components. An Approach component names "
+    "how the contribution addresses the problem: a method, intervention, "
+    "mechanism, material, measurement, data source, model, theory, experimental "
+    "design, or analytic strategy.\n\n"
+    "Reuse a vocabulary entry only when it names the same Problem component or "
+    "the same Approach component in a compatible field context. Keep phrases "
+    "short and stable, but do not merge concepts merely because they share broad "
+    "words across different fields. Do not narrate the paper, copy motivational "
+    "wording, or force everything into computer-science terminology.\n\n"
     "What counts as the contribution\n"
     "  Only tag what this work actually proposes, combines, extends, or relies on as "
     "a main part of its own claim. Skip background, related work, citations, and generic "
     "scene-setting unless that setting is itself what the paper studies.\n\n"
-    "task_keywords — the single most important research problem this contribution targets\n"
-    "  Identify the ONE core problem or gap the work tries to solve. If the paper "
-    "genuinely addresses two distinct scientific problems, list both. "
-    "Do NOT enumerate every sub-challenge, evaluation scenario, or symptom mentioned "
-    "in the text — only the central scientific question.\n"
-    "  Do NOT use broad application context alone (e.g. industry domain, \"real world\", "
-    "popularity of a field) when that is only where the method is evaluated, not the "
-    "scientific problem.\n"
-    "  Do not put model families or algorithms here; those belong in method_keywords.\n"
-    "  If a phrase is more \"why the topic matters\" than \"what is broken scientifically\", "
-    "omit it.\n\n"
-    "method_keywords — the core techniques the contribution uses or introduces\n"
-    "  Name 2-3 specific mechanisms a reader could implement: losses, modules, training "
-    "tricks, representations, named methods (e.g. `lora low-rank adaptation`, "
-    "`rotary positional embeddings`, `dice loss`).\n"
-    "  Avoid vague umbrellas (`deep learning`, `transformer-based fusion`, "
-    "`end-to-end training`) unless the text pins down a specific variant that is "
-    "central to the contribution.\n"
+    "task_keywords — Problem components\n"
+    "  Identify the ONE core Problem component. If the contribution genuinely "
+    "centers on two distinct Problem components, list both.\n"
+    "  Include the object of study or target system when it is central: a disease, "
+    "material, organism, population, institution, molecule, ecosystem, market, legal "
+    "regime, or technological system.\n"
+    "  Include the focal problem, phenomenon, relation, outcome, or property when it "
+    "is central: antibiotic resistance, soil carbon sequestration, housing price "
+    "spillovers, phase transition, crop yield loss, adolescent depression risk, "
+    "photocatalytic hydrogen evolution, or structure-property relation.\n"
+    "  Do NOT enumerate every sub-challenge, evaluation scenario, organism, geography, "
+    "or symptom mentioned in the text; include those only when they define the "
+    "Problem component of the contribution.\n"
+    "  Do not put tools, assays, algorithms, datasets, statistical models, or "
+    "experimental designs here; those belong in method_keywords.\n\n"
+    "method_keywords — Approach components\n"
+    "  Name 2-4 specific Approach components a researcher could recognize or reproduce: "
+    "methods, interventions, mechanisms, measurements, materials, instruments, "
+    "assays, study designs, data sources, theories, statistical estimators, "
+    "simulation models, optimization methods, architectures, or named analytic "
+    "procedures.\n"
+    "  Examples include `randomized controlled trial`, `policy intervention`, "
+    "`inflammatory pathway`, `rna sequencing`, `satellite imagery`, `cohort study`, "
+    "`difference in differences`, `cryo electron microscopy`, `density functional "
+    "theory`, `graph neural network`, `polymer electrolyte membrane`, and "
+    "`bayesian hierarchical model`.\n"
+    "  Avoid vague umbrellas (`empirical analysis`, `experimental study`, "
+    "`computational modeling`, `machine learning`) unless the text pins down a "
+    "specific variant that is central to the contribution.\n"
     "  Do not repeat a task_keywords item here.\n"
-    "  Do not list every minor architectural detail or hyperparameter tweak; focus on "
-    "the mechanisms that are central to the claim.\n\n"
+    "  Do not list every minor measurement, control variable, reagent, dataset column, "
+    "or implementation detail; focus on the mechanisms that are central to the claim.\n\n"
     "Using the vocabularies (two lists below in the user message)\n"
     "  Reuse an existing entry when this contribution genuinely builds on, combines, "
     "or depends on that concept — not when the word only shows up in passing.\n"
     "  When you reuse, copy the line from the vocabulary exactly.\n"
     "  Add a new phrase only if nothing in the vocabulary covers that same "
-    "contribution-level idea.\n\n"
+    "Problem component or Approach component.\n\n"
     "Consistency\n"
-    "  If the vocabulary already contains a phrase that names the same contribution-level "
-    "idea, reuse that exact wording. Do not create near-synonym variants (e.g. do not add "
+    "  If the vocabulary already contains a phrase that names the same component, "
+    "reuse that exact wording. Do not create near-synonym variants (e.g. do not add "
     "\"small far away objects\" if \"far objects\" already exists).\n\n"
     "Mutual exclusion\n"
     "  task_keywords and method_keywords must be disjoint. The same phrase must never "
     "appear in both lists for a single document.\n\n"
     "Style rules\n"
     "  Lowercase, 2-5 words per phrase, no trailing punctuation, no pronouns.\n"
-    "  Ban standalone filler: `method`, `approach`, `framework`, `machine learning`, "
-    "`deep learning`, `neural network`, `model`, `learning`, `end-to-end training`, "
-    "`self-supervised learning`, `transformer-based`.\n"
-    "  No author names, dataset names, benchmark names, or paper titles.\n"
-    "  About 1-2 task_keywords (hard max 3) and 2-3 method_keywords (hard max 4). "
-    "method_keywords may be empty if the text never names a concrete mechanism.\n\n"
+    "  Ban standalone filler: `method`, `approach`, `framework`, `analysis`, "
+    "`study`, `model`, `system`, `effect`, `impact`, `application`, `machine learning`, "
+    "`deep learning`, `neural network`, `end-to-end training`, `transformer-based`.\n"
+    "  No author names, paper titles, venue names, grant/program names, or generic "
+    "discipline names alone. Dataset or cohort names may appear only when the named "
+    "resource itself is central to the contribution.\n"
+    "  About 1-2 task_keywords/Problem components (hard max 3) and 2-3 "
+    "method_keywords/Approach components (hard max 4). "
+    "method_keywords may be empty if the text never names a concrete method, "
+    "intervention, or mechanism.\n\n"
     "Return only valid JSON:\n"
     "  {\"task_keywords\": [\"...\", ...], \"method_keywords\": [\"...\", ...]}\n"
+)
+
+
+ANALYSIS_FIELDS = [
+    "Aim",
+    "Motivation",
+    "Questions addressed",
+    "Method",
+    "Evaluation metrics",
+    "Findings",
+    "Contributions",
+    "Limitations",
+    "Future work",
+]
+
+ANNOTATION_SYSTEM_PROMPT = (
+    "You are a careful scholarly annotator. Given a research manuscript, write a "
+    "concise scholarly analysis covering Aim, Motivation, Questions addressed, "
+    "Method, Evaluation metrics, Findings, Contributions, Limitations, and Future "
+    "work. Finally extract 5-12 concise scholarly keywords grounded in that "
+    "analysis. Return exactly one valid JSON object, with no markdown, no prose "
+    "outside the JSON, and no missing JSON fields."
+)
+
+IDEA_SEED_SYSTEM_PROMPT = (
+    ANNOTATION_SYSTEM_PROMPT
+    + " For generated ideas, also compare the idea against the provided seed/memory "
+      "paper annotations. For every keyword you extract, decide whether the concept "
+      "comes from the seed papers or is new in the generated idea."
 )
 
 
@@ -506,16 +572,17 @@ def _build_messages(
     chunks.append("\n---\n")
     if skip_vocab_block:
         chunks.append(
-            "Extract task_keywords (research problem only, not background) and "
-            "method_keywords (concrete mechanisms only). Every phrase must reflect the "
-            "contribution itself, not passing mentions. Be concise and specific."
+            "Extract task_keywords as Problem components, and method_keywords "
+            "as Approach components. Every phrase must reflect "
+            "the contribution itself, not passing mentions. Be concise, specific, "
+            "and field-appropriate."
         )
     else:
         chunks.append(
-            "Extract task_keywords (research problem only, not background) and "
-            "method_keywords (concrete mechanisms only). Every phrase must reflect the "
-            "contribution itself, not passing mentions. Reuse vocabulary lines only when "
-            "this work truly uses or builds on that idea."
+            "Extract task_keywords as Problem components, and method_keywords "
+            "as Approach components. Every phrase must reflect "
+            "the contribution itself, not passing mentions. Reuse vocabulary lines "
+            "only when this work names the same component in a compatible field context."
         )
     if require_idea_memory_partition and doc_kind == "idea":
         chunks.append(
@@ -542,20 +609,20 @@ def _build_messages(
             "  - If *_from_memory is empty, the reasoning list is empty.\n"
             "\n"
             "Examples:\n"
-            "  - Memory task: \"few-shot image classification\"\n"
-            "    Idea task: \"few-shot classification\"\n"
-            "    → from_memory; reasoning: \"few-shot classification → few-shot image classification (same core concept, wording simplified)\"\n"
-            "  - Memory method: \"forward mode differentiation\"\n"
-            "    Idea method: \"forward-mode meta-optimization\"\n"
-            "    → from_memory; reasoning: \"forward-mode meta-optimization → forward mode differentiation (same mechanism, new target)\"\n"
-            "  - Memory task: \"offline reinforcement learning\"\n"
-            "    Idea task: \"offline policy learning for medical decisions\"\n"
-            "    → from_memory; reasoning: \"offline policy learning for medical decisions → offline reinforcement learning (same paradigm, new domain)\"\n"
-            "  - Memory method: \"graph convolution network\"\n"
-            "    Idea method: \"transformer-based self-attention for graphs\"\n"
+            "  - Memory task: \"antibiotic resistance\"\n"
+            "    Idea task: \"drug resistant infections\"\n"
+            "    → from_memory; reasoning: \"drug resistant infections → antibiotic resistance (same biological problem, wording broadened)\"\n"
+            "  - Memory method: \"rna sequencing\"\n"
+            "    Idea method: \"single cell transcriptomics\"\n"
+            "    → from_memory; reasoning: \"single cell transcriptomics → rna sequencing (same measurement family, more specific variant)\"\n"
+            "  - Memory task: \"urban heat islands\"\n"
+            "    Idea task: \"heat exposure inequality\"\n"
+            "    → from_memory; reasoning: \"heat exposure inequality → urban heat islands (same environmental hazard, social outcome added)\"\n"
+            "  - Memory method: \"difference in differences\"\n"
+            "    Idea method: \"synthetic control design\"\n"
             "    → new; no reasoning entry needed\n"
-            "  - Memory task: \"robust bayesian optimization\"\n"
-            "    Idea task: \"stochastic optimization with delayed feedback\"\n"
+            "  - Memory task: \"photocatalytic water splitting\"\n"
+            "    Idea task: \"electrochemical carbon dioxide reduction\"\n"
             "    → new; no reasoning entry needed"
         )
     chunks.append("\n\nOutput ONLY the JSON object.")
@@ -563,6 +630,69 @@ def _build_messages(
     return [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": user},
+    ]
+
+
+def _build_annotation_messages(
+    doc_text: str,
+    doc_kind: str,
+    doc_id: str,
+    *,
+    seed_block: Optional[str] = None,
+) -> List[Dict[str, str]]:
+    prompt = f"""Document kind: {doc_kind}
+Document id: {doc_id}
+"""
+    if seed_block:
+        prompt += f"""
+
+Seed/memory paper annotations for comparison. Use these to judge whether generated idea keywords are derived from seed papers or new:
+{seed_block}
+"""
+    prompt += f"""
+
+Please proceed to conduct a scholarly analysis of the provided research manuscript. Your analysis should encapsulate the core components of the study as delineated in the enumeration below:
+Aim: What is the aim of the study?
+Motivation: What is the motivation of the study?
+Questions addressed: What question does this study address?
+Methods: What methods does the study use to solve the question?
+Evaluation metrics: What evaluation metrics are used in this study?
+Findings: What does the study find?
+Contributions: What are the contributions of this study?
+Limitations: What are the limitations of this study?
+Future work: What is the future work of this study?
+
+Subsequently, organize the distilled information into a structured JSON format, omitting any supplementary explanations.
+
+Return exactly one JSON object with this structure:
+{{
+  "analysis": {{
+    "Aim": "...",
+    "Motivation": "...",
+    "Questions addressed": "...",
+    "Method": "...",
+    "Evaluation metrics": "...",
+    "Findings": "...",
+    "Contributions": "...",
+    "Limitations": "...",
+    "Future work": "..."
+  }},
+  "keywords": ["...", "..."]
+"""
+    if seed_block:
+        prompt += ',\n  "seed_keyword_judgments": [\n    {"keyword": "...", "from_seed": true, "matched_seed_paper_id": "... or null", "matched_seed_keyword": "... or null", "reason": "..."}\n  ]\n'
+    prompt += (
+        "}\n\n"
+        "Rules:\n"
+        "- Output JSON only; do not wrap it in markdown fences.\n"
+        "- Include every analysis field exactly as shown above.\n"
+        "- keywords must be a non-empty list of 5-12 short scholarly noun phrases.\n"
+        "- If a field is uncertain, write a brief best-effort value rather than omitting it.\n\n"
+        "Research manuscript:\n" + doc_text.strip()
+    )
+    return [
+        {"role": "system", "content": IDEA_SEED_SYSTEM_PROMPT if seed_block else ANNOTATION_SYSTEM_PROMPT},
+        {"role": "user", "content": prompt},
     ]
 
 

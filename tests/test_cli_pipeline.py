@@ -182,6 +182,73 @@ class CommandPipelineTests(unittest.TestCase):
             self.assertEqual(summary["new_method"]["share"], 0.5)
             self.assertEqual(summary["both_new"]["share"], 0.25)
 
+    def test_impact_uses_task_level_agent_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            human_vectors = np.asarray(
+                [[1.0, 0.0], [0.8, 0.2], [0.0, 1.0], [0.2, 0.8]], dtype=np.float32
+            )
+            human_vectors /= np.linalg.norm(human_vectors, axis=1, keepdims=True)
+            human_rows = [
+                {"paper_id": "p0", "context_id": "c", "year": 2019, "citation_count": 0},
+                {"paper_id": "p1", "context_id": "c", "year": 2020, "citation_count": 2},
+                {"paper_id": "p2", "context_id": "c", "year": 2020, "citation_count": 8},
+                {"paper_id": "p3", "context_id": "c", "year": 2020, "citation_count": 4},
+            ]
+            idea_vectors = np.asarray(
+                [[1.0, 0.0], [0.9, 0.1], [0.0, 1.0]], dtype=np.float32
+            )
+            idea_vectors /= np.linalg.norm(idea_vectors, axis=1, keepdims=True)
+            idea_rows = [
+                {"run_id": "r0", "task_id": "t0", "context_id": "c", "seed_year": 2020, "agent": "a", "model": "m"},
+                {"run_id": "r1", "task_id": "t0", "context_id": "c", "seed_year": 2020, "agent": "a", "model": "m"},
+                {"run_id": "r2", "task_id": "t1", "context_id": "c", "seed_year": 2020, "agent": "a", "model": "m"},
+            ]
+            links = [
+                {"task_id": "t0", "paper_id": "p2", "context_id": "c", "seed_year": 2020},
+                {"task_id": "t1", "paper_id": "p3", "context_id": "c", "seed_year": 2020},
+            ]
+            np.save(root / "human.npy", human_vectors)
+            np.save(root / "ideas.npy", idea_vectors)
+            (root / "human.json").write_text(json.dumps(human_rows), encoding="utf-8")
+            (root / "ideas.json").write_text(json.dumps(idea_rows), encoding="utf-8")
+            write_jsonl(root / "links.jsonl", links)
+            out_dir = root / "out"
+            run_module(
+                "scripts.analysis.measurements.impact",
+                "--idea-embeddings", root / "ideas.npy",
+                "--idea-meta", root / "ideas.json",
+                "--human-embeddings", root / "human.npy",
+                "--human-meta", root / "human.json",
+                "--followon-embeddings", root / "human.npy",
+                "--followon-meta", root / "human.json",
+                "--followon-links", root / "links.jsonl",
+                "--out-dir", out_dir,
+                "--neighbors", 2,
+                "--bootstrap-repetitions", 20,
+                "--skip-validation",
+            )
+            summary_path = out_dir / "potential_impact_summary.json"
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                summary["summaries"]["agent"],
+                summary["task_level_summaries"]["agent"],
+            )
+            self.assertEqual(
+                summary["summaries"]["pooled"],
+                summary["idea_level_summaries"]["pooled"],
+            )
+            table_path = root / "impact.csv"
+            run_module(
+                "scripts.analysis.measurements.table",
+                "--measure", "impact",
+                "--summary", summary_path,
+                "--group", "agent",
+                "--csv-out", table_path,
+            )
+            with table_path.open(newline="", encoding="utf-8") as handle:
+                self.assertEqual(len(list(csv.reader(handle))), 2)
+
 
 if __name__ == "__main__":
     unittest.main()

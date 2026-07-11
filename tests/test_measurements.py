@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
+import tempfile
 import unittest
+from pathlib import Path
 
 import numpy as np
 
@@ -8,9 +11,21 @@ from scripts.analysis.measurements.breadth import matched_context_records
 from scripts.analysis.measurements.common import mean_pairwise_cosine
 from scripts.analysis.measurements.distance import build_task_records
 from scripts.analysis.measurements.frontier import build_frontiers, build_records
-from scripts.analysis.measurements.impact import citation_baselines, score_followons
+from scripts.analysis.measurements.impact import (
+    citation_baselines,
+    paper_summaries,
+    score_followons,
+    validate_human_landscape,
+)
 from scripts.analysis.measurements.novelty import category, pack, vote_for
-from scripts.analysis.keyword_extraction.extract_keywords import extract_agent_text
+from scripts.analysis.keyword_extraction.extract_keywords import (
+    ANALYSIS_FIELDS,
+    Document,
+    _build_annotation_messages,
+    _parse_annotation,
+    _run_stage,
+    extract_agent_text,
+)
 
 
 class CommonTests(unittest.TestCase):
@@ -141,6 +156,45 @@ class ImpactTests(unittest.TestCase):
         self.assertFalse(skipped)
         self.assertGreater(by_task["t"][0], 0)
 
+    def test_paper_summary_uses_task_level_subgroups(self) -> None:
+        idea_level = {
+            "pooled": {"all": {"ai_mean": 0.3}},
+            "agent": {"a": {"ai_mean": 0.1}},
+        }
+        task_level = {
+            "pooled": {"all": {"ai_mean": 0.4}},
+            "agent": {"a": {"ai_mean": 0.8}},
+        }
+        summary = paper_summaries(idea_level, task_level, ["agent"])
+        self.assertEqual(summary["pooled"]["all"]["ai_mean"], 0.3)
+        self.assertEqual(summary["agent"]["a"]["ai_mean"], 0.8)
+
+    def test_human_validation_uses_strictly_prior_years(self) -> None:
+        embeddings = np.asarray(
+            [[1.0, 0.0], [0.9, 0.1], [0.0, 1.0], [0.1, 0.9]], dtype=float
+        )
+        embeddings /= np.linalg.norm(embeddings, axis=1, keepdims=True)
+        rows = [
+            {"paper_id": "p0", "context_id": "c", "year": 2020},
+            {"paper_id": "p1", "context_id": "c", "year": 2021},
+            {"paper_id": "p2", "context_id": "c", "year": 2021},
+            {"paper_id": "p3", "context_id": "c", "year": 2022},
+        ]
+        records, summary = validate_human_landscape(
+            embeddings,
+            rows,
+            np.asarray([0.1, 0.2, 0.8, 0.7]),
+            context_key="context_id",
+            year_key="year",
+            k=2,
+            min_year=2021,
+        )
+        by_id = {row["paper_id"]: row for row in records}
+        self.assertEqual(by_id["p1"]["n_neighbors"], 1)
+        self.assertEqual(by_id["p2"]["n_neighbors"], 1)
+        self.assertEqual(by_id["p3"]["n_neighbors"], 2)
+        self.assertEqual(summary["n"], 3)
+
 
 class NoveltyTests(unittest.TestCase):
     def test_keyword_partition_fallback(self) -> None:
@@ -175,6 +229,61 @@ class KeywordExtractionTests(unittest.TestCase):
         )
         self.assertIn("Hypothesis", text or "")
         self.assertIn("Experiment two", text or "")
+
+    def test_scholarly_annotation_schema(self) -> None:
+        analysis = {field: f"value for {field}" for field in ANALYSIS_FIELDS}
+        parsed = _parse_annotation(
+            json.dumps(
+                {
+                    "analysis": analysis,
+                    "keywords": ["Keyword One", "Keyword Two", "Three", "Four", "Five"],
+                }
+            )
+        )
+        self.assertFalse(parsed.parse_error)
+        self.assertEqual(len(parsed.keywords), 5)
+        self.assertIn("Aim:", parsed.embedding_text)
+        self.assertIn("Method:", parsed.embedding_text)
+
+    def test_annotation_prompt_is_not_novelty_labeling(self) -> None:
+        messages = _build_annotation_messages("text", "idea", "r1")
+        prompt = "\n".join(message["content"] for message in messages)
+        self.assertIn('"analysis"', prompt)
+        self.assertIn('"keywords"', prompt)
+        self.assertNotIn("new_research_question", prompt)
+        self.assertNotIn("task_new", prompt)
+
+    def test_invalid_annotations_are_separated(self) -> None:
+        valid = json.dumps(
+            {
+                "analysis": {field: field for field in ANALYSIS_FIELDS},
+                "keywords": ["one", "two", "three", "four", "five"],
+            }
+        )
+
+        class FakeGenerator:
+            def count_message_tokens(self, messages):
+                return 10
+
+            def generate(self, messages, **kwargs):
+                return [valid, "not json"]
+
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "idea_annotations.jsonl"
+            _run_stage(
+                generator=FakeGenerator(),
+                documents=[Document("r1", "text"), Document("r2", "text")],
+                kind="idea",
+                output=output,
+                id_key="run_id",
+                batch_size=2,
+                max_input_tokens=100,
+                max_output_tokens=100,
+                temperature=0.0,
+            )
+            self.assertEqual(len(output.read_text(encoding="utf-8").splitlines()), 1)
+            errors = output.with_name("idea_annotations.errors.jsonl")
+            self.assertEqual(len(errors.read_text(encoding="utf-8").splitlines()), 1)
 
 
 if __name__ == "__main__":

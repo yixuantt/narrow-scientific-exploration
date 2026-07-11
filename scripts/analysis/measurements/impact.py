@@ -3,15 +3,16 @@
 
 Human citation impact is log1p(citations) centered within research area and
 publication year. Each generated idea receives the mean centered score of its
-k nearest historical human papers in the same area. Follow-on papers are scored
-directly against the same area/year citation baseline. Comparisons are paired
-at the seed-task level.
+k nearest historical human papers in the same area. Follow-on papers receive
+the same neighborhood-based proxy. The pooled comparison is idea-level, while
+agent/model comparisons first average generated ideas within each seed task.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import math
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, Sequence
@@ -114,6 +115,29 @@ def infer_field(context_id: str) -> str:
         "physics": "Physics",
         "sociology": "Sociology",
     }.get(prefix, prefix.replace("_", " ").title())
+
+
+def exclude_fields(
+    embeddings: np.ndarray,
+    rows: Sequence[dict[str, Any]],
+    excluded: set[str],
+    *,
+    context_key: str,
+) -> tuple[np.ndarray, list[dict[str, Any]], int]:
+    if not excluded:
+        return embeddings, list(rows), 0
+    excluded_normalized = {field.casefold() for field in excluded}
+    keep: list[int] = []
+    for index, row in enumerate(rows):
+        context = safe_text(row.get(context_key))
+        field = safe_text(row.get("primary_field")) or infer_field(context)
+        if field.casefold() not in excluded_normalized:
+            keep.append(index)
+    return (
+        embeddings[np.asarray(keep, dtype=np.int64)],
+        [dict(rows[index]) for index in keep],
+        len(rows) - len(keep),
+    )
 
 
 def discover_partition_files(root: Path, directory: str, pattern: str) -> dict[str, Path]:
@@ -309,6 +333,110 @@ def score_queries(
     return output, dict(skipped)
 
 
+def _rankdata(values: np.ndarray) -> np.ndarray:
+    order = np.argsort(values, kind="mergesort")
+    ranks = np.empty(len(values), dtype=float)
+    start = 0
+    while start < len(order):
+        end = start + 1
+        while end < len(order) and values[order[end]] == values[order[start]]:
+            end += 1
+        ranks[order[start:end]] = (start + end - 1) / 2.0
+        start = end
+    return ranks
+
+
+def _correlation(left: np.ndarray, right: np.ndarray) -> tuple[float | None, float | None]:
+    if len(left) < 4 or np.isclose(left.std(), 0.0) or np.isclose(right.std(), 0.0):
+        return None, None
+    value = float(np.corrcoef(left, right)[0, 1])
+    if not np.isfinite(value):
+        return None, None
+    clipped = min(1.0 - 1e-15, max(-1.0 + 1e-15, value))
+    z = math.atanh(clipped) * math.sqrt(len(left) - 3)
+    return value, float(math.erfc(abs(z) / math.sqrt(2.0)))
+
+
+def validate_human_landscape(
+    human_embeddings: np.ndarray,
+    human_rows: Sequence[dict[str, Any]],
+    human_scores: np.ndarray,
+    *,
+    context_key: str,
+    year_key: str,
+    k: int,
+    min_year: int,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Predict each human paper from strictly earlier same-area neighbors."""
+    by_context: dict[str, list[int]] = defaultdict(list)
+    for index, row in enumerate(human_rows):
+        context = safe_text(row.get(context_key))
+        year = integer(row, [year_key, "year"])
+        if context and year is not None and np.isfinite(human_scores[index]):
+            by_context[context].append(index)
+
+    records: list[dict[str, Any]] = []
+    for context, indices in sorted(by_context.items()):
+        if len(indices) < 2:
+            continue
+        local = np.asarray(indices, dtype=np.int64)
+        years = np.asarray(
+            [integer(human_rows[index], [year_key, "year"]) for index in indices],
+            dtype=int,
+        )
+        matrix = human_embeddings[local]
+        scores = human_scores[local]
+        for target in np.flatnonzero(years >= min_year):
+            eligible = np.flatnonzero(years < years[target])
+            if len(eligible) == 0:
+                continue
+            similarities = matrix[target] @ matrix[eligible].T
+            take = min(k, len(eligible))
+            if take < len(eligible):
+                positions = np.argpartition(similarities, -take)[-take:]
+            else:
+                positions = np.arange(len(eligible))
+            neighbor_indices = eligible[positions]
+            source = human_rows[indices[target]]
+            records.append(
+                {
+                    "context_id": context,
+                    "paper_id": source.get("paper_id"),
+                    "paper_year": int(years[target]),
+                    "predicted_impact": float(scores[neighbor_indices].mean()),
+                    "target_impact": float(scores[target]),
+                    "n_neighbors": int(take),
+                }
+            )
+
+    if not records:
+        return [], {"n": 0}
+    predicted = np.asarray([row["predicted_impact"] for row in records], dtype=float)
+    target = np.asarray([row["target_impact"] for row in records], dtype=float)
+    spearman, spearman_p = _correlation(_rankdata(predicted), _rankdata(target))
+    pearson, pearson_p = _correlation(predicted, target)
+    high_predicted = predicted >= np.quantile(predicted, 0.75)
+    high_target = target >= np.quantile(target, 0.75)
+    high_share = float(high_target[high_predicted].mean()) if high_predicted.any() else None
+    other_share = float(high_target[~high_predicted].mean()) if (~high_predicted).any() else None
+    enrichment = (
+        high_share / max(other_share, 1e-12)
+        if high_share is not None and other_share is not None
+        else None
+    )
+    return records, {
+        "n": len(records),
+        "mean_neighbors": float(np.mean([row["n_neighbors"] for row in records])),
+        "spearman_rho": spearman,
+        "spearman_p": spearman_p,
+        "pearson_r": pearson,
+        "pearson_p": pearson_p,
+        "top_quartile_enrichment": enrichment,
+        "target_high_share_high_proxy": high_share,
+        "target_high_share_other_proxy": other_share,
+    }
+
+
 def expand_followon_embeddings(
     embeddings: np.ndarray,
     rows: Sequence[dict[str, Any]],
@@ -482,12 +610,14 @@ def unpaired_summary(
 
 
 def idea_level_summaries(
-    idea_scores: Sequence[dict[str, Any]], followon_scores: Sequence[dict[str, Any]]
+    idea_scores: Sequence[dict[str, Any]],
+    followon_scores: Sequence[dict[str, Any]],
+    group_fields: Sequence[str] = ("agent", "model"),
 ) -> dict[str, Any]:
     output: dict[str, Any] = {
         "pooled": {"all": unpaired_summary(idea_scores, followon_scores)}
     }
-    for field in ("agent", "model"):
+    for field in group_fields:
         output[field] = {}
         values = sorted({safe_text(row.get(field)) for row in idea_scores if safe_text(row.get(field))})
         for value in values:
@@ -495,6 +625,22 @@ def idea_level_summaries(
             task_ids = {safe_text(row.get("task_id")) for row in ai_group}
             human_group = [row for row in followon_scores if safe_text(row.get("task_id")) in task_ids]
             output[field][value] = unpaired_summary(ai_group, human_group)
+    return output
+
+
+def paper_summaries(
+    idea_level: dict[str, Any],
+    task_level: dict[str, Any],
+    group_fields: Sequence[str],
+) -> dict[str, Any]:
+    """Use the estimands reported in the paper's impact table.
+
+    The pooled row is idea-level. Agent/model rows average within seed task
+    before averaging tasks, so task size does not reweight subgroup results.
+    """
+    output = {"pooled": idea_level.get("pooled", {})}
+    for field in group_fields:
+        output[field] = task_level.get(field, {})
     return output
 
 
@@ -522,6 +668,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch-size", type=int, default=1024)
     parser.add_argument("--bootstrap-repetitions", type=int, default=1000)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--exclude-fields", nargs="*", default=["Geology"])
+    parser.add_argument("--validation-min-year", type=int, default=2021)
+    parser.add_argument("--skip-validation", action="store_true")
     return parser.parse_args()
 
 
@@ -542,6 +691,16 @@ def main() -> int:
         human_rows = merge_human_metadata(
             human_rows, canonical_human_metadata(args.canonical_root)
         )
+    excluded = set(args.exclude_fields or [])
+    idea_embeddings, idea_rows, idea_field_dropped = exclude_fields(
+        idea_embeddings, idea_rows, excluded, context_key=args.context_key
+    )
+    human_embeddings, human_rows, human_field_dropped = exclude_fields(
+        human_embeddings, human_rows, excluded, context_key=args.context_key
+    )
+    followon_embeddings, followon_rows, followon_field_dropped = exclude_fields(
+        followon_embeddings, followon_rows, excluded, context_key=args.context_key
+    )
     require_fields(idea_rows, [args.context_key, args.task_key], str(args.idea_meta))
     require_fields(human_rows, [args.context_key, args.human_year_key, args.citation_key], str(args.human_meta))
     require_fields(followon_rows, [args.context_key, args.task_key], str(args.followon_links))
@@ -598,12 +757,36 @@ def main() -> int:
         if task_id:
             human_by_task[task_id].append(float(row["impact_score"]))
     records = task_records(idea_scores, human_by_task, args.group_fields)
+    idea_level = idea_level_summaries(
+        idea_scores, followon_scores, args.group_fields
+    )
+    task_level = grouped_summaries(
+        records, args.bootstrap_repetitions, args.seed
+    )
+    validation_records: list[dict[str, Any]] = []
+    validation: dict[str, Any] = {"n": 0}
+    if not args.skip_validation:
+        validation_records, validation = validate_human_landscape(
+            human_embeddings,
+            human_rows,
+            human_scores,
+            context_key=args.context_key,
+            year_key=args.human_year_key,
+            k=args.neighbors,
+            min_year=args.validation_min_year,
+        )
     output = {
         "measure": "potential_impact",
         "definition": "Mean within-area historical citation residual among the k nearest semantic neighbors, applied to both ideas and follow-on papers.",
         "citation_normalization": "log1p(citations) minus the mean log1p(citations) in the same research area and publication year.",
-        "aggregation": "The primary summaries compare idea-level scores with follow-on scores on the corresponding task subset. Paired task-level summaries are reported separately.",
-        "parameters": {"neighbors": args.neighbors, "historical_year_rule": "paper_year <= seed_year"},
+        "aggregation": "The pooled row is idea-level; agent/model rows first average ideas within seed task and then average task-level values.",
+        "parameters": {
+            "neighbors": args.neighbors,
+            "historical_year_rule": "paper_year <= seed_year",
+            "validation_year_rule": "neighbor_year < target_year",
+            "validation_min_year": args.validation_min_year,
+            "excluded_fields": sorted(excluded),
+        },
         "counts": {
             "idea_rows": len(idea_rows),
             "human_landscape_rows": len(human_rows),
@@ -614,15 +797,19 @@ def main() -> int:
             "idea_duplicates_dropped": idea_duplicates,
             "idea_skipped": idea_skipped,
             "followon_skipped": followon_skipped,
+            "idea_rows_excluded_by_field": idea_field_dropped,
+            "human_rows_excluded_by_field": human_field_dropped,
+            "followon_rows_excluded_by_field": followon_field_dropped,
         },
-        "summaries": idea_level_summaries(idea_scores, followon_scores),
-        "task_level_summaries": grouped_summaries(
-            records, args.bootstrap_repetitions, args.seed
-        ),
+        "summaries": paper_summaries(idea_level, task_level, args.group_fields),
+        "idea_level_summaries": idea_level,
+        "task_level_summaries": task_level,
+        "validation": validation,
     }
     write_jsonl(args.out_dir / "potential_impact_idea_scores.jsonl", idea_scores)
     write_jsonl(args.out_dir / "potential_impact_followon_scores.jsonl", followon_scores)
     write_jsonl(args.out_dir / "potential_impact_records.jsonl", records)
+    write_jsonl(args.out_dir / "potential_impact_validation.jsonl", validation_records)
     write_json(args.out_dir / "potential_impact_summary.json", output)
     print(json.dumps(output["counts"], indent=2))
     return 0

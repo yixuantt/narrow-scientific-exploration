@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
-"""Shared offline vLLM chat backend for unified ideation.
+"""Offline vLLM chat backend for keyword extraction.
 
 This module keeps one in-process vLLM engine alive and batches chat-template
-requests across concurrent callers. It is intentionally reusable from
-`unified_ideation.py` so the shell runner only needs to launch a single Python
-process for an entire experiment grid.
+requests across concurrent callers.
 
 Environment:
     VLLM_OFFLINE_TQDM — if unset or 1/true, vLLM ``LLM.generate`` uses tqdm

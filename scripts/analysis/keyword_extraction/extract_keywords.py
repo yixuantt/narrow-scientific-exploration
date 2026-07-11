@@ -4,16 +4,15 @@
 Two global keyword libraries (task, method) start empty and grow cumulatively
 across two stages:
 
-    Stage 1 (papers):  unique memory papers from ``data/canonical_states/clean_main_batch``.
-    Stage 2 (ideas) :  every valid idea under ``runs/ideation_main`` (status==ok and
-                       passing CoT leak / empty filters, matching analyze_runs_rq1.py).
+    Stage 1 (papers): unique memory papers from canonical-state JSON files.
+    Stage 2 (ideas): every valid generated-idea JSON file under the runs directory.
 
 Each document is sent to the LLM together with the current vocabulary snapshot.
 The LLM separates (1) Problem components, i.e. what the contribution is about,
 from (2) Approach components, i.e. how the contribution addresses the problem.
 The output fields remain ``task_keywords`` and ``method_keywords`` for backward
 compatibility.
-We use the offline vLLM backend (``run_inference_vllm.LLMGenerator``) so that
+We use the offline vLLM backend (``vllm_backend.LLMGenerator``) so that
 we can drive one GPU-resident engine in-process and batch across the whole
 dataset.
 
@@ -28,8 +27,7 @@ Prompt-size guard:
     When the serialized vocab plus one document would not fit within the
     configured token budget, we fall back to a lexical top-K view of the vocab
     (terms sharing alphabetic tokens with the document, ranked by overlap,
-    truncated to ``--vocab-topk``). This mirrors what the user requested:
-    "full vocab normally; if it stops fitting, lexical match -> top 100".
+    truncated to ``--vocab-topk``).
 
 Outputs (under ``--out-dir``, default ``analysis_out/keyword_extraction``):
     paper_keywords.jsonl   one row per unique paper  (paper_id, task, method, ...)
@@ -60,14 +58,67 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, Iterator, List, Optional, Sequence, Tuple
 
-# Make the project root importable so we can reuse shared analysis helpers.
+# Make the project root importable for the local vLLM backend.
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from scripts.common.analysis_utils import extract_agent_text  # noqa: E402
-
 DEFAULT_EXTRACTION_MODEL = "google/gemma-4-31B-it"
+
+
+def _join_nonempty(parts: Sequence[Any]) -> Optional[str]:
+    values = [str(part).strip() for part in parts if part is not None and str(part).strip()]
+    return "\n\n".join(values) if values else None
+
+
+def _extract_markdown_section(plan: str, heading_number: int) -> Optional[str]:
+    pattern = re.compile(
+        rf"^\s*##\s*{heading_number}\.?\s+.*?(?=^\s*##\s*{heading_number + 1}\.?\s+|\Z)",
+        flags=re.MULTILINE | re.DOTALL | re.IGNORECASE,
+    )
+    match = pattern.search(plan)
+    return match.group(0).strip() if match else None
+
+
+def extract_agent_text(agent: str, final_output: Any) -> Optional[str]:
+    """Extract comparable idea text from supported output schemas."""
+    if not isinstance(final_output, dict):
+        return None
+    if agent in ("flat_llm", "ai_scientist_v2"):
+        return _join_nonempty(
+            [
+                final_output.get("Title") or final_output.get("Name"),
+                final_output.get("Short Hypothesis"),
+                final_output.get("Abstract"),
+            ]
+        )
+    if agent == "research_agent":
+        return _join_nonempty([final_output.get("problem"), final_output.get("method")])
+    if agent == "agent_laboratory":
+        plan = final_output.get("plan")
+        if not isinstance(plan, str) or not plan.strip():
+            return None
+        prefix = re.split(
+            r"^\s*##\s*3\.?\s*Experimental\b.*$",
+            plan,
+            maxsplit=1,
+            flags=re.MULTILINE | re.IGNORECASE,
+        )[0].strip()
+        return _join_nonempty(
+            [_extract_markdown_section(prefix, 1), _extract_markdown_section(prefix, 2)]
+        ) or prefix
+    if agent == "co_scientist":
+        ranked = final_output.get("ranked_hypotheses")
+        if not isinstance(ranked, list) or not ranked or not isinstance(ranked[0], dict):
+            return None
+        top = ranked[0]
+        experiments = top.get("experiments")
+        if isinstance(experiments, list):
+            experiments = "\n".join(str(item) for item in experiments)
+        return _join_nonempty(
+            [top.get("title"), top.get("hypothesis"), top.get("rationale"), experiments]
+        )
+    return None
 
 
 # --------------------------------------------------------------------------- #
@@ -151,24 +202,19 @@ def _collect_unique_papers(canonical_root: Path) -> List[PaperDoc]:
 
 
 def _parse_run_path(run_path: Path, repo_root: Path) -> Tuple[Optional[str], Optional[str], Optional[str]]:
-    """Infer (model, year, agent) from the canonical runs/ideation_main layout."""
+    """Infer (model, year, agent) from runs/<batch>/<model>/<year>/<agent>."""
     try:
         rel = run_path.relative_to(repo_root)
     except ValueError:
         return None, None, None
     parts = rel.parts
-    # runs/ideation_main/<model>/<year>/<agent>/<file>.json
-    if len(parts) >= 5 and parts[0] == "runs" and parts[1] == "ideation_main":
+    if len(parts) >= 6 and parts[0] == "runs":
         return parts[2], parts[3], parts[4]
     return None, None, None
 
 
 def _collect_valid_ideas(runs_root: Path, repo_root: Path) -> List[IdeaDoc]:
-    """Load every runs/ideation_main idea, dropping CoT-leak / empty / failed runs.
-
-    Uses ``analysis_utils.extract_agent_text`` which already bakes in CoT leak
-    and empty-text filtering per agent.
-    """
+    """Load valid generated ideas and normalize framework-specific output schemas."""
     files = sorted(runs_root.rglob("*.json"))
     LOG.info("Scanning %d run files from %s", len(files), runs_root)
     ideas: List[IdeaDoc] = []
@@ -1400,7 +1446,7 @@ def main() -> None:
     ap.add_argument("--max-model-len", type=int, default=int(os.getenv("MAX_MODEL_LEN", "16384")))
     ap.add_argument("--gpu-memory-utilization", type=float, default=float(os.getenv("GPU_MEMORY_UTILIZATION", "0.9")))
     ap.add_argument("--batch-size", type=int, default=128,
-                    help="vLLM submission batch size per stage step.")
+                    help="vLLM processing batch size per stage step.")
     ap.add_argument("--max-output-tokens", type=int, default=512)
     ap.add_argument(
         "--idea-max-output-tokens",
@@ -1444,7 +1490,7 @@ def main() -> None:
         len(task_vocab), len(method_vocab),
     )
 
-    # vLLM configuration through env vars used by run_inference_vllm.LLMGenerator.
+    # vLLM configuration through environment variables used by the local backend.
     os.environ.setdefault("VLLM_MODEL", args.model)
     os.environ.setdefault("TENSOR_PARALLEL_SIZE", str(args.tensor_parallel_size))
     os.environ.setdefault("MAX_MODEL_LEN", str(args.max_model_len))
@@ -1456,7 +1502,7 @@ def main() -> None:
     os.environ.setdefault("VLLM_OFFLINE_TQDM", "0")
 
     # Lazy import so argparse errors never pay the vLLM bring-up cost.
-    from run_inference_vllm import get_generator
+    from scripts.analysis.keyword_extraction.vllm_backend import get_generator
 
     LOG.info("Bringing up offline vLLM engine: model=%s TP=%d max_model_len=%d",
              args.model, args.tensor_parallel_size, args.max_model_len)

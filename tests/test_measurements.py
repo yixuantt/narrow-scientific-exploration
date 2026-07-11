@@ -10,6 +10,7 @@ from scripts.analysis.measurements.distance import build_task_records
 from scripts.analysis.measurements.frontier import build_frontiers, build_records
 from scripts.analysis.measurements.impact import citation_baselines, score_followons
 from scripts.analysis.measurements.novelty import category, pack, vote_for
+from scripts.analysis.keyword_extraction.extract_keywords import extract_agent_text
 
 
 class CommonTests(unittest.TestCase):
@@ -155,6 +156,25 @@ class NoveltyTests(unittest.TestCase):
         self.assertEqual(summary["new_research_question"]["share"], 0.5)
         self.assertEqual(summary["new_method"]["share"], 1.0)
         self.assertEqual(summary["both_new"]["share"], 0.5)
+
+
+class KeywordExtractionTests(unittest.TestCase):
+    def test_co_scientist_text_extraction(self) -> None:
+        text = extract_agent_text(
+            "co_scientist",
+            {
+                "ranked_hypotheses": [
+                    {
+                        "title": "Title",
+                        "hypothesis": "Hypothesis",
+                        "rationale": "Rationale",
+                        "experiments": ["Experiment one", "Experiment two"],
+                    }
+                ]
+            },
+        )
+        self.assertIn("Hypothesis", text or "")
+        self.assertIn("Experiment two", text or "")
 
 
 if __name__ == "__main__":

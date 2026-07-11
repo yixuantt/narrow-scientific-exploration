@@ -2,8 +2,8 @@
 """Extract standardized scholarly annotations from papers and generated ideas.
 
 The same prompt and output schema are used for both document types. Outputs
-contain a structured ``analysis`` object, 5--12 scholarly ``keywords``, and the
-``analysis.Aim + analysis.Method`` text used by downstream embedding pipelines.
+contain a structured ``analysis`` object and 5--12 scholarly ``keywords``.
+Downstream users choose which annotation fields to embed.
 
 The extraction model is selected at runtime with ``--model``. This module does
 not perform novelty labeling; independent novelty annotator outputs are inputs
@@ -372,15 +372,6 @@ class ParsedAnnotation:
     parse_error: bool
     schema_errors: list[str] = field(default_factory=list)
 
-    @property
-    def embedding_text(self) -> str:
-        parts = []
-        if self.analysis.get("Aim"):
-            parts.append(f"Aim: {self.analysis['Aim']}")
-        if self.analysis.get("Method"):
-            parts.append(f"Method: {self.analysis['Method']}")
-        return "\n".join(parts)
-
 
 def _parse_annotation(raw: str) -> ParsedAnnotation:
     if not raw or not raw.strip():
@@ -516,7 +507,6 @@ def _run_stage(
                     "doc_kind": kind,
                     "analysis": parsed.analysis,
                     "keywords": parsed.keywords,
-                    "embedding_text": parsed.embedding_text,
                     "llm_meta": {
                         "parse_error": parsed.parse_error,
                         "schema_errors": parsed.schema_errors,
@@ -595,7 +585,6 @@ def main() -> int:
     summary: dict[str, Any] = {
         "model": args.model,
         "schema": "scholarly_annotation_v1",
-        "embedding_text": "analysis.Aim + analysis.Method",
         "stages": {},
     }
 

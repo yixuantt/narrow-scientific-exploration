@@ -4,8 +4,7 @@
 Human citation impact is log1p(citations) centered within research area and
 publication year. Each generated idea receives the mean centered score of its
 k nearest historical human papers in the same area. Follow-on papers receive
-the same neighborhood-based proxy. The pooled comparison is idea-level, while
-agent/model comparisons first average generated ideas within each seed task.
+the same neighborhood-based proxy.
 """
 
 from __future__ import annotations
@@ -628,16 +627,12 @@ def idea_level_summaries(
     return output
 
 
-def paper_summaries(
+def primary_summaries(
     idea_level: dict[str, Any],
     task_level: dict[str, Any],
     group_fields: Sequence[str],
 ) -> dict[str, Any]:
-    """Use the estimands reported in the paper's impact table.
-
-    The pooled row is idea-level. Agent/model rows average within seed task
-    before averaging tasks, so task size does not reweight subgroup results.
-    """
+    """Build pooled and grouped summaries from their analysis-level results."""
     output = {"pooled": idea_level.get("pooled", {})}
     for field in group_fields:
         output[field] = task_level.get(field, {})
@@ -669,8 +664,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--bootstrap-repetitions", type=int, default=1000)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--exclude-fields", nargs="*", default=["Geology"])
-    parser.add_argument("--validation-min-year", type=int, default=2021)
-    parser.add_argument("--skip-validation", action="store_true")
+    parser.add_argument(
+        "--validation-min-year", type=int, default=2021, help=argparse.SUPPRESS
+    )
+    parser.add_argument(
+        "--validate-human-impact", action="store_true", help=argparse.SUPPRESS
+    )
     return parser.parse_args()
 
 
@@ -765,7 +764,7 @@ def main() -> int:
     )
     validation_records: list[dict[str, Any]] = []
     validation: dict[str, Any] = {"n": 0}
-    if not args.skip_validation:
+    if args.validate_human_impact:
         validation_records, validation = validate_human_landscape(
             human_embeddings,
             human_rows,
@@ -779,12 +778,10 @@ def main() -> int:
         "measure": "potential_impact",
         "definition": "Mean within-area historical citation residual among the k nearest semantic neighbors, applied to both ideas and follow-on papers.",
         "citation_normalization": "log1p(citations) minus the mean log1p(citations) in the same research area and publication year.",
-        "aggregation": "The pooled row is idea-level; agent/model rows first average ideas within seed task and then average task-level values.",
+        "aggregation": "Pooled and grouped summaries are computed at their configured analysis levels.",
         "parameters": {
             "neighbors": args.neighbors,
             "historical_year_rule": "paper_year <= seed_year",
-            "validation_year_rule": "neighbor_year < target_year",
-            "validation_min_year": args.validation_min_year,
             "excluded_fields": sorted(excluded),
         },
         "counts": {
@@ -801,15 +798,23 @@ def main() -> int:
             "human_rows_excluded_by_field": human_field_dropped,
             "followon_rows_excluded_by_field": followon_field_dropped,
         },
-        "summaries": paper_summaries(idea_level, task_level, args.group_fields),
+        "summaries": primary_summaries(idea_level, task_level, args.group_fields),
         "idea_level_summaries": idea_level,
         "task_level_summaries": task_level,
-        "validation": validation,
     }
+    if args.validate_human_impact:
+        output["parameters"].update(
+            {
+                "validation_year_rule": "neighbor_year < target_year",
+                "validation_min_year": args.validation_min_year,
+            }
+        )
+        output["validation"] = validation
     write_jsonl(args.out_dir / "potential_impact_idea_scores.jsonl", idea_scores)
     write_jsonl(args.out_dir / "potential_impact_followon_scores.jsonl", followon_scores)
     write_jsonl(args.out_dir / "potential_impact_records.jsonl", records)
-    write_jsonl(args.out_dir / "potential_impact_validation.jsonl", validation_records)
+    if args.validate_human_impact:
+        write_jsonl(args.out_dir / "potential_impact_validation.jsonl", validation_records)
     write_json(args.out_dir / "potential_impact_summary.json", output)
     print(json.dumps(output["counts"], indent=2))
     return 0

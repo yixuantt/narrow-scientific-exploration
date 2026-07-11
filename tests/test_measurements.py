@@ -13,7 +13,7 @@ from scripts.analysis.measurements.distance import build_task_records
 from scripts.analysis.measurements.frontier import build_frontiers, build_records
 from scripts.analysis.measurements.impact import (
     citation_baselines,
-    paper_summaries,
+    primary_summaries,
     score_followons,
     validate_human_landscape,
 )
@@ -156,7 +156,7 @@ class ImpactTests(unittest.TestCase):
         self.assertFalse(skipped)
         self.assertGreater(by_task["t"][0], 0)
 
-    def test_paper_summary_uses_task_level_subgroups(self) -> None:
+    def test_grouped_summary_uses_task_level_subgroups(self) -> None:
         idea_level = {
             "pooled": {"all": {"ai_mean": 0.3}},
             "agent": {"a": {"ai_mean": 0.1}},
@@ -165,7 +165,7 @@ class ImpactTests(unittest.TestCase):
             "pooled": {"all": {"ai_mean": 0.4}},
             "agent": {"a": {"ai_mean": 0.8}},
         }
-        summary = paper_summaries(idea_level, task_level, ["agent"])
+        summary = primary_summaries(idea_level, task_level, ["agent"])
         self.assertEqual(summary["pooled"]["all"]["ai_mean"], 0.3)
         self.assertEqual(summary["agent"]["a"]["ai_mean"], 0.8)
 
@@ -242,8 +242,6 @@ class KeywordExtractionTests(unittest.TestCase):
         )
         self.assertFalse(parsed.parse_error)
         self.assertEqual(len(parsed.keywords), 5)
-        self.assertIn("Aim:", parsed.embedding_text)
-        self.assertIn("Method:", parsed.embedding_text)
 
     def test_annotation_prompt_is_not_novelty_labeling(self) -> None:
         messages = _build_annotation_messages("text", "idea", "r1")
@@ -281,7 +279,8 @@ class KeywordExtractionTests(unittest.TestCase):
                 max_output_tokens=100,
                 temperature=0.0,
             )
-            self.assertEqual(len(output.read_text(encoding="utf-8").splitlines()), 1)
+            valid_row = json.loads(output.read_text(encoding="utf-8"))
+            self.assertNotIn("embedding_text", valid_row)
             errors = output.with_name("idea_annotations.errors.jsonl")
             self.assertEqual(len(errors.read_text(encoding="utf-8").splitlines()), 1)
 

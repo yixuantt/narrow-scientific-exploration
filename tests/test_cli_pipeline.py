@@ -226,7 +226,6 @@ class CommandPipelineTests(unittest.TestCase):
                 "--out-dir", out_dir,
                 "--neighbors", 2,
                 "--bootstrap-repetitions", 20,
-                "--skip-validation",
             )
             summary_path = out_dir / "potential_impact_summary.json"
             summary = json.loads(summary_path.read_text(encoding="utf-8"))

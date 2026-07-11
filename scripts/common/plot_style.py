@@ -1,9 +1,7 @@
-"""Shared publication-quality style for all paper figures."""
+"""Shared plotting style."""
 import matplotlib.pyplot as plt
-import matplotlib as mpl
 
-# ── Publication rcParams ────────────────────────────────────────────────────
-PAPER_RC = {
+PLOT_RC = {
     "font.family":           "DejaVu Sans",
     "font.size":             14,
     "axes.titlesize":        15,
@@ -32,7 +30,7 @@ PAPER_RC = {
 }
 
 def apply():
-    plt.rcParams.update(PAPER_RC)
+    plt.rcParams.update(PLOT_RC)
 
 # ── Shared colours ──────────────────────────────────────────────────────────
 PALETTE = {
@@ -40,15 +38,16 @@ PALETTE = {
     "ai_scientist_v2":  "#DD8452",
     "research_agent":   "#55A868",
     "agent_laboratory": "#C44E52",
+    "co_scientist":     "#8172B2",
 }
 AGENT_LABELS = {
     "flat_llm":         "Flat LLM",
     "ai_scientist_v2":  "AI Scientist v2",
     "research_agent":   "ResearchAgent",
     "agent_laboratory": "AgentLaboratory",
+    "co_scientist":     "Co-Scientist",
 }
-AGENTS   = ["flat_llm", "ai_scientist_v2", "research_agent", "agent_laboratory"]
+AGENTS   = ["flat_llm", "ai_scientist_v2", "research_agent", "agent_laboratory", "co_scientist"]
 MARKERS  = {"flat_llm": "o", "ai_scientist_v2": "s",
-            "research_agent": "^", "agent_laboratory": "D"}
-BASELINE = 0.4339          # cross-context cosine similarity
-BASELINE_LABEL = f"Cross-context baseline = {BASELINE:.3f}"
+            "research_agent": "^", "agent_laboratory": "D",
+            "co_scientist": "P"}

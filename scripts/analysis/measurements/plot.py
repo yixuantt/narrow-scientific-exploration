@@ -54,7 +54,9 @@ def style_axis(axis: plt.Axes) -> None:
 
 def paired_groups(data: dict[str, Any], measure: str, group: str) -> dict[str, Any]:
     if measure == "frontier":
-        return {"overall": data["summaries"]["overall"]} if group == "overall" else data["summaries"][f"by_{group}"]
+        return {"overall": data["summaries"]["overall"]} if group in {"overall", "pooled"} else data["summaries"][f"by_{group}"]
+    if measure == "distance" and group in {"year", "seed_year"}:
+        return data["summaries"]["by_year"]
     return data["summaries"][group]
 
 
@@ -143,8 +145,8 @@ def plot_matrix(axis: plt.Axes, matrix: dict[str, Any]) -> None:
 
 
 def plot_novelty(axis: plt.Axes, data: dict[str, Any], group: str) -> None:
-    groups = data["summaries"]["overall"] if group == "overall" else data["summaries"][f"by_{group}"]
-    if group == "overall":
+    groups = data["summaries"]["overall"] if group in {"overall", "pooled"} else data["summaries"][f"by_{group}"]
+    if group in {"overall", "pooled"}:
         groups = {"overall": groups}
     names = list(groups)
     question = np.asarray([groups[name]["new_research_question"]["share"] for name in names]) * 100

@@ -29,6 +29,7 @@ python -m scripts.analysis.measurements.frontier --help
 python -m scripts.analysis.measurements.impact --help
 python -m scripts.analysis.measurements.novelty --help
 python -m scripts.analysis.measurements.plot --help
+python -m scripts.analysis.measurements.table --help
 python -m scripts.analysis.run_measurements --help
 ```
 

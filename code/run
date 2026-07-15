@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Code Ocean entrypoint: runs the empirical-analysis section scripts in order.
+set -euo pipefail
+cd "$(dirname "$0")"
+
+for script in section_3_1_breadth.py section_3_2_distance.py section_3_3_frontier.py section_3_4_impact.py section_3_6_novelty.py; do
+  echo "==================================================================="
+  echo "Running $script"
+  echo "==================================================================="
+  python3 "$script"
+  echo
+done

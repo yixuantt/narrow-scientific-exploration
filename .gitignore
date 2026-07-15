@@ -1,23 +1,10 @@
-.DS_Store
 __pycache__/
-*.py[cod]
+*.pyc
+
+.DS_Store
+
 .venv/
-.env
+venv/
 
-# Local inputs and outputs.
-data/
-corpus/
-runs/
 results/
-analysis_out/
-figures/
-logs/
-*.npy
-*.npz
-*.jsonl.gz
-*.tar
-*.tar.gz
-*.zip
-
-# Local third-party source trees are not published in this repository.
-external/
+data/

@@ -1,6 +1,0 @@
-numpy
-pyarrow
-matplotlib
-torch
-transformers
-vllm

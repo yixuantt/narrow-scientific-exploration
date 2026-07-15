@@ -35,3 +35,7 @@ or run an individual section, e.g.:
 ```bash
 python3 code/section_3_1_breadth.py
 ```
+
+## Results
+
+Each script writes its full printed report to `/results/{script_name}.txt` (Code Ocean's reproducible-run output directory), in addition to printing it to stdout. Outside Code Ocean, if `/results` isn't mounted, reports are written to `results/` next to `code/` (override with the `RESULTS_DIR` environment variable).

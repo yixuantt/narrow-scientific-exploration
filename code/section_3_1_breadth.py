@@ -17,6 +17,7 @@ from common import (
     load_parquet,
     mean_cross_cosine,
     mean_pairwise_cosine,
+    save_report,
     stack_embeddings,
     weighted_mean,
 )
@@ -133,4 +134,5 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    with save_report("section_3_1_breadth"):
+        main()

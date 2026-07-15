@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import contextlib
 import math
+import os
+import sys
 from collections import defaultdict
+from pathlib import Path
 
 import huggingface_hub  # noqa: F401  (registers the "hf://" fsspec protocol)
 import numpy as np
@@ -15,6 +19,47 @@ HF_REPO = "yixuantt/submission_data"
 def load_parquet(relative_path: str) -> pd.DataFrame:
     """Read one parquet file directly from the public HF dataset repo."""
     return pd.read_parquet(f"hf://datasets/{HF_REPO}/{relative_path}")
+
+
+def results_dir() -> Path:
+    """Where Code Ocean expects reproducible run outputs: /results if mounted (the
+    platform's convention), else RESULTS_DIR if set, else ../results next to code/
+    for local runs."""
+    if Path("/results").is_dir():
+        path = Path("/results")
+    elif os.environ.get("RESULTS_DIR"):
+        path = Path(os.environ["RESULTS_DIR"])
+    else:
+        path = Path(__file__).resolve().parent.parent / "results"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+class _Tee:
+    def __init__(self, *streams):
+        self._streams = streams
+
+    def write(self, data):
+        for stream in self._streams:
+            stream.write(data)
+
+    def flush(self):
+        for stream in self._streams:
+            stream.flush()
+
+
+@contextlib.contextmanager
+def save_report(name: str):
+    """Mirror everything printed inside the block to results/{name}.txt as well as stdout."""
+    out_path = results_dir() / f"{name}.txt"
+    with out_path.open("w", encoding="utf-8") as fh:
+        original_stdout = sys.stdout
+        sys.stdout = _Tee(original_stdout, fh)
+        try:
+            yield
+        finally:
+            sys.stdout = original_stdout
+    print(f"[wrote {out_path}]")
 
 
 def stack_embeddings(df: pd.DataFrame, col: str = "embedding") -> np.ndarray:

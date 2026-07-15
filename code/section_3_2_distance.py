@@ -11,7 +11,7 @@ from collections import defaultdict
 
 import numpy as np
 
-from common import cosine_distance_to_centroid, load_parquet, stack_embeddings
+from common import cosine_distance_to_centroid, load_parquet, save_report, stack_embeddings
 
 ANCHOR_YEARS = [2020, 2021, 2022, 2023]
 SAMPLE_PER_AREA = 5  # matched seed sets drawn per research area per year
@@ -143,4 +143,5 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    with save_report("section_3_2_distance"):
+        main()

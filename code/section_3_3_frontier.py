@@ -11,7 +11,7 @@ from collections import defaultdict
 
 import numpy as np
 
-from common import load_parquet
+from common import load_parquet, save_report
 
 
 def build_groups(idea_rows, followon_by_task):
@@ -85,4 +85,5 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    with save_report("section_3_3_frontier"):
+        main()

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 
-from common import load_parquet
+from common import load_parquet, save_report
 
 
 def pack(rows: list[dict]) -> dict:
@@ -61,4 +61,5 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    with save_report("section_3_6_novelty"):
+        main()
